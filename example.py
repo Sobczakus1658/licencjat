@@ -14,6 +14,7 @@ import numpy as np
 import torch
 import PIL.Image
 import dnnlib
+import os
 
 #----------------------------------------------------------------------------
 
@@ -27,9 +28,14 @@ def generate_image_grid(
     torch.manual_seed(seed)
 
     # Load network.
-    print(f'Loading network from "{network_pkl}"...')
-    with dnnlib.util.open_url(network_pkl) as f:
+    network_pkl_path = os.path.join('database', network_pkl)
+    print(f'Loading network from "{network_pkl_path}"...')
+    with open(network_pkl_path, 'rb') as f:
         net = pickle.load(f)['ema'].to(device)
+
+    # Uncomment this block to load the network from the web.
+    # with dnnlib.util.open_url(network_pkl) as f:
+    #     net = pickle.load(f)['ema'].to(device)
 
     # Pick latents and labels.
     print(f'Generating {batch_size} images...')
@@ -80,11 +86,13 @@ def generate_image_grid(
 #----------------------------------------------------------------------------
 
 def main():
-    model_root = 'https://nvlabs-fi-cdn.nvidia.com/edm/pretrained'
-    generate_image_grid(f'{model_root}/edm-cifar10-32x32-cond-vp.pkl',   'cifar10-32x32.png',  num_steps=18) # FID = 1.79, NFE = 35
-    generate_image_grid(f'{model_root}/edm-ffhq-64x64-uncond-vp.pkl',    'ffhq-64x64.png',     num_steps=40) # FID = 2.39, NFE = 79
-    generate_image_grid(f'{model_root}/edm-afhqv2-64x64-uncond-vp.pkl',  'afhqv2-64x64.png',   num_steps=40) # FID = 1.96, NFE = 79
-    generate_image_grid(f'{model_root}/edm-imagenet-64x64-cond-adm.pkl', 'imagenet-64x64.png', num_steps=256, S_churn=40, S_min=0.05, S_max=50, S_noise=1.003) # FID = 1.36, NFE = 511
+    # First you need download the database. Run python download.py
+    # If you want to work on a GPU, remove the device argument from the function calls.
+
+    generate_image_grid('edm-cifar10-32x32-cond-vp.pkl',   'cifar10-32x32.png',  num_steps=18, device = torch.device('cpu')) # FID = 1.79, NFE = 35
+    generate_image_grid('edm-ffhq-64x64-uncond-vp.pkl',    'ffhq-64x64.png',     num_steps=40, device = torch.device('cpu')) # FID = 2.39, NFE = 79
+    generate_image_grid('edm-afhqv2-64x64-uncond-vp.pkl',  'afhqv2-64x64.png',   num_steps=40, device = torch.device('cpu')) # FID = 1.96, NFE = 79
+    generate_image_grid('edm-imagenet-64x64-cond-adm.pkl', 'imagenet-64x64.png', num_steps=256, S_churn=40, S_min=0.05, S_max=50, S_noise=1.003, device = torch.device('cpu')) # FID = 1.36, NFE = 511
 
 #----------------------------------------------------------------------------
 
