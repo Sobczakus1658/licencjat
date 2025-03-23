@@ -89,6 +89,10 @@ def main():
     # First you need download the database. Run python download.py
     # If you want to work on a GPU, remove the device argument from the function calls.
 
+    if not os.path.exists('output'):
+        os.makedirs('output')
+        print("Created 'output' folder.")
+
     generate_image_grid('edm-cifar10-32x32-cond-vp.pkl',   'output/cifar10-32x32.png',  num_steps=18) # FID = 1.79, NFE = 35
     generate_image_grid('edm-ffhq-64x64-uncond-vp.pkl',    'output/ffhq-64x64.png',     num_steps=40) # FID = 2.39, NFE = 79
     generate_image_grid('edm-afhqv2-64x64-uncond-vp.pkl',  'output/afhqv2-64x64.png',   num_steps=40) # FID = 1.96, NFE = 79
