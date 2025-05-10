@@ -277,6 +277,43 @@ def cox_matthews_step(net, class_labels, x, t_cur, t_nxt):
     return u_n1
 
 
+def krogstad_step(net, class_labels, x, t_cur, t_nxt):
+    def dpm_lambda(t):
+        return -torch.log(t)
+    
+    def dpm_t_lambda(l):
+        return torch.exp(-l)
+
+    lambda_cur = dpm_lambda(t_cur)
+    lambda_nxt = dpm_lambda(t_nxt)
+    h = lambda_nxt - lambda_cur
+
+    u_n = x
+
+    s = dpm_t_lambda(lambda_cur + 0.5 * h)
+    net_x = dpm_net(net, class_labels, x, t_cur)
+
+    U_n2 = u_n - s * h * (phi_1(0.5 * h) * 0.5 * net_x)
+    net_U_n2 = dpm_net(net, class_labels, U_n2, s)
+    D_n2 = net_U_n2 - net_x
+
+    U_n3 = u_n - s * h * (0.5 * phi_1(0.5 * h) * net_x + phi_2(0.5 * h) * D_n2)
+    net_U_n3 = dpm_net(net, class_labels, U_n3, s)
+    D_n3 = net_U_n3 - net_x
+
+    U_n4 = u_n - t_nxt * h * (phi_1(h) * net_x + 2 * phi_1(h) * D_n3)
+    net_U_n4 = dpm_net(net, class_labels, U_n4, t_nxt)
+
+    u_n1 = u_n - t_nxt * h * (
+        net_x * (phi_1(h) - 3 * phi_2(h) + 4 * phi_3(h)) + \
+        net_U_n2 * (2 * phi_2(h) - 4 * phi_3(h)) + \
+        net_U_n3 * (2 * phi_2(h) - 4 * phi_3(h)) + \
+        net_U_n4 * (4 * phi_3(h) - phi_2(h))
+    )
+
+    return u_n1
+
+
 # Simple, alpha(t) = 1, sigma(t) = t
 def ddim_solver_step(net, class_labels, x, t_cur, t_nxt):
     eps = dpm_net(net, class_labels, x, t_cur)
@@ -321,7 +358,7 @@ def edm_sampler(
     t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
 
     # TODO: de-retardation
-    return generic_simple_sampler_ode(net, latents, cox_matthews_step, t_steps, class_labels)
+    return generic_simple_sampler_ode(net, latents, krogstad_step, t_steps, class_labels)
 
     # Main sampling loop.
     x_next = latents.to(torch.float64) * t_steps[0]
