@@ -24,7 +24,13 @@ from torch_utils import distributed as dist
 # methods discussed in the paper.
 
 
-IMPLEMENTED_SOLVERS = ['euler', 'heun', 'simple_second_order', 'cox_matthews']
+IMPLEMENTED_SOLVERS = [
+    'euler', 'heun', 
+    'dpm_solver_2', 'dpm_solver_3', 
+    'simple_second_order', 
+    'cox_matthews', 'krogstad', 
+    '5_nfe_4_order'
+]
 
 def phi_0(h):
     return torch.exp(h)
@@ -99,6 +105,52 @@ def simple_second_order_step(
     return x_nxt
 
 
+def dpm_solver_2(
+    net, x_cur, sigma, alpha, alpha_deriv, sigma_deriv, lam, lam_inv,
+    t_cur, t_nxt, class_labels
+):
+    lam_cur = lam(t_cur)
+    lam_nxt = lam(t_nxt)
+    h = lam_nxt - lam_cur
+    s = lam_inv(lam_cur + h / 2)
+
+    f_1 = dpm_net(net, class_labels, x_cur, alpha(t_cur), sigma(t_cur))
+    u = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * (h / 2) * phi_1(h / 2) * f_1
+    f_2 = dpm_net(net, class_labels, u, alpha(s), sigma(s))
+    
+    x_nxt = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * h * phi_1(h) * f_2
+    return x_nxt
+
+
+def dpm_solver_3(
+    net, x_cur, sigma, alpha, alpha_deriv, sigma_deriv, lam, lam_inv,
+    t_cur, t_nxt, class_labels
+):
+    r1 = 1 / 3
+    r2 = 2 / 3
+
+    lam_cur = lam(t_cur)
+    lam_nxt = lam(t_nxt)
+    h = lam_nxt - lam_cur
+    s_1 = lam_inv(lam_cur + r1 * h)
+    s_2 = lam_inv(lam_cur + r2 * h)
+
+    f_1 = dpm_net(net, class_labels, x_cur, alpha(t_cur), sigma(t_cur))
+    
+    u_1 = (alpha(s_1) / alpha(t_cur)) * x_cur - sigma(s_1) * (r1 * h) * phi_1(r1 * h) * f_1
+    f_2 = dpm_net(net, class_labels, u_1, alpha(s_1), sigma(s_1))
+    D_1 = f_2 - f_1
+
+    u_2 = (alpha(s_2) / alpha(t_cur)) * x_cur - sigma(s_2) * (r2 * h) * phi_1(r2 * h) * f_1 \
+        - (sigma(s_2) * r2 / r1) * r2 * h * phi_2(r2 * h) * D_1
+    f_3 = dpm_net(net, class_labels, u_2, alpha(s_2), sigma(s_2))
+    D_2 = f_3 - f_1
+
+    x_nxt = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * h * phi_1(h) * f_1 - (sigma(t_nxt) / r2) * h * phi_2(h) * D_2
+    return x_nxt
+
+
+# Algorithm 2
 def cox_matthews_step(
     net, x_cur, sigma, alpha, alpha_deriv, sigma_deriv, lam, lam_inv,
     t_cur, t_nxt, class_labels
@@ -130,23 +182,117 @@ def cox_matthews_step(
     return x_nxt
 
 
-def get_solver(solver):
-    # return euler_step
-    if solver == 'euler':
-        return euler_step
-    elif solver == 'heun':
-        return heun_step
-    elif solver == 'simple_second_order':
-        return simple_second_order_step
-    elif solver == 'cox_matthews':
-        return cox_matthews_step
-    else:
-        raise ValueError(f'Unknown solver: {solver}')
+# Algorithm 2
+def krogstad_step(
+    net, x_cur, sigma, alpha, alpha_deriv, sigma_deriv, lam, lam_inv,
+    t_cur, t_nxt, class_labels
+):
+    lam_cur = lam(t_cur)
+    lam_nxt = lam(t_nxt)
+    h = lam_nxt - lam_cur
+    s = lam_inv(lam_cur + h / 2)
+
+    f_1 = dpm_net(net, class_labels, x_cur, alpha(t_cur), sigma(t_cur))
+
+    u_2 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * (h / 2) * phi_1(h / 2) * f_1
+    f_2 = dpm_net(net, class_labels, u_2, alpha(s), sigma(s))
+    D_2 = f_2 - f_1
+
+    u_3 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * h * (
+        0.5 * phi_1(h / 2) * f_1 + 
+        phi_2(h / 2) * D_2
+    )
+    f_3 = dpm_net(net, class_labels, u_3, alpha(s), sigma(s))
+    D_3 = f_3 - f_1
+
+    u_4 = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * h * (
+        phi_1(h) * f_1 +
+        2 * phi_2(h) * D_3
+    )
+    f_4 = dpm_net(net, class_labels, u_4, alpha(t_nxt), sigma(t_nxt))
+
+    b_1 = phi_1(h) - 3 * phi_2(h) + 4 * phi_3(h)
+    b_2 = b_3 = 2 * phi_2(h) - 4 * phi_3(h)
+    b_4 = 4 * phi_3(h) - phi_2(h)
+
+    x_nxt = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * h * (b_1 * f_1 + b_2 * f_2 + b_3 * f_3 + b_4 * f_4)
+    return x_nxt
+
+
+def expRK_based_4_5(
+    net, x_cur, sigma, alpha, alpha_deriv, sigma_deriv, lam, lam_inv,
+    t_cur, t_nxt, class_labels
+):
+    lam_cur = lam(t_cur)
+    lam_nxt = lam(t_nxt)
+    h = lam_nxt - lam_cur
+    s = lam_inv(lam_cur + h / 2)
+
+    f_1 = dpm_net(net, class_labels, x_cur, alpha(t_cur), sigma(t_cur))
+
+    u_2 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * (h / 2) * phi_1(h / 2) * f_1
+    f_2 = dpm_net(net, class_labels, u_2, alpha(s), sigma(s))
+    D_2 = f_2 - f_1
+
+    u_3 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * h * (
+        0.5 * phi_1(h / 2) * f_1 + 
+        phi_2(h / 2) * D_2
+    )
+    f_3 = dpm_net(net, class_labels, u_3, alpha(s), sigma(s))
+    D_3 = f_3 - f_1
+
+    u_4 = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * h * (
+        phi_1(h) * f_1 +
+        phi_2(h) * (D_2 + D_3)
+    )
+    f_4 = dpm_net(net, class_labels, u_4, alpha(t_nxt), sigma(t_nxt))
+    D_4 = f_4 - f_1
+
+    u_5 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * h * (
+        phi_1(0.5 * h) * 0.5 * f_1 + \
+        phi_2(0.5 * h) * 0.25 * (2 * D_2 + 2 * D_3 - D_4) + \
+        phi_3(0.5 * h) * 0.5 * (-D_2 - D_3 + D_4) + \
+        phi_2(h) * 0.25 * (D_2 + D_3 - D_4) + \
+        phi_3(h) * (-D_2 - D_3 + D_4)
+    )
+    f_5 = dpm_net(net, class_labels, u_5, alpha(s), sigma(s))
+    D_5 = f_5 - f_1
+
+    x_nxt = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * h * (
+        phi_1(h) * f_1 + \
+        phi_2(h) * (-D_4 + 4 * D_5) + \
+        phi_3(h) * (4 * D_4 - 8 * D_5)
+    )
+
+    return x_nxt
+
+
+# Returns solver function and NFEs per step
+def get_solver_by_name(solver):
+    return {
+        "euler": (euler_step, 1),
+        "heun": (heun_step, 2),
+        "simple_second_order": (simple_second_order_step, 2),
+        "dpm_solver_2": (dpm_solver_2, 2),
+        "dpm_solver_3": (dpm_solver_3, 3),
+        "cox_matthews": (cox_matthews_step, 4),
+        "krogstad": (krogstad_step, 4),
+        "5_nfe_4_order": (expRK_based_4_5, 5)
+    }[solver]
+
+
+def get_solver_by_nfe(nfe):
+    return {
+        1: euler_step,
+        2: dpm_solver_2,
+        3: dpm_solver_3,
+        4: cox_matthews_step,
+    }[nfe]
 
 
 # Scaling wywalone bo jest ściśle zależne od schedule teraz (potrzebujemy t_lambda)
 def deterministic_ablation_sampler(
-    net, latents, class_labels=None, num_steps=18, 
+    net, latents, class_labels=None, nfe=18, 
     sigma_min=None, sigma_max=None, rho=7,
     solver='heun', discretization='edm', schedule='linear', 
     epsilon_s=1e-3, C_1=0.001, C_2=0.008, M=1000
@@ -178,6 +324,9 @@ def deterministic_ablation_sampler(
     # Compute corresponding betas for VP.
     vp_beta_d = 2 * (np.log(sigma_min ** 2 + 1) / epsilon_s - np.log(sigma_max ** 2 + 1)) / (epsilon_s - 1)
     vp_beta_min = np.log(sigma_max ** 2 + 1) - 0.5 * vp_beta_d
+
+    solver_step, nfe_per_step = get_solver_by_name(solver)
+    num_steps = (nfe + nfe_per_step - 2) // nfe_per_step + 1 # ceil((nfe - 1) / nfe_per_step) -> normal steps, last step is euler
 
     # Define time steps in terms of noise level.
     step_indices = torch.arange(num_steps, dtype=torch.float64, device=latents.device)
@@ -244,11 +393,18 @@ def deterministic_ablation_sampler(
     t_nxt = t_steps[0]
     x_next = latents.to(torch.float64) * (sigma(t_nxt) * alpha(t_nxt))
 
-    solver_step = get_solver(solver)
+    delta_nfe = nfe_per_step
+    nfe_left = nfe
     for i, (t_cur, t_nxt) in enumerate(zip(t_steps[:-1], t_steps[1:])): # 0, ..., N-1
         if i == num_steps - 1:
+            delta_nfe = 1
             solver_step = euler_step
+        elif nfe_left - 1 < delta_nfe:
+            assert i == num_steps - 2
+            delta_nfe = nfe_left - 1
+            solver_step = get_solver_by_nfe(delta_nfe)
 
+        nfe_left -= delta_nfe
         x_next = solver_step(
             net=net, x_cur=x_next,
             alpha=alpha, alpha_deriv=alpha_deriv,
@@ -305,7 +461,7 @@ def parse_int_list(s):
 @click.option('--class', 'class_idx',      help='Class label  [default: random]', metavar='INT',                    type=click.IntRange(min=0), default=None)
 @click.option('--batch', 'max_batch_size', help='Maximum batch size', metavar='INT',                                type=click.IntRange(min=1), default=64, show_default=True)
 
-@click.option('--steps', 'num_steps',      help='Number of sampling steps', metavar='INT',                          type=click.IntRange(min=1), default=18, show_default=True)
+@click.option('--nfe',                     help='Number of NFEs per evaluation', metavar='INT',                     type=click.IntRange(min=1), default=18, show_default=True)
 @click.option('--sigma_min',               help='Lowest noise level  [default: varies]', metavar='FLOAT',           type=click.FloatRange(min=0, min_open=True))
 @click.option('--sigma_max',               help='Highest noise level  [default: varies]', metavar='FLOAT',          type=click.FloatRange(min=0, min_open=True))
 @click.option('--rho',                     help='Time step exponent', metavar='FLOAT',                              type=click.FloatRange(min=0, min_open=True), default=7, show_default=True)
