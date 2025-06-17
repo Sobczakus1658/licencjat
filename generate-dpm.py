@@ -29,7 +29,7 @@ IMPLEMENTED_SOLVERS = [
     'dpm_solver_2', 'dpm_solver_3', 
     'simple_second_order', 
     'cox_matthews', 'krogstad', 
-    '5_nfe_4_order'
+    'ostermann'
 ]
 
 def phi_0(h):
@@ -182,7 +182,7 @@ def cox_matthews_step(
     return x_nxt
 
 
-# Algorithm 2
+# Algorithm 3
 def krogstad_step(
     net, x_cur, sigma, alpha, alpha_deriv, sigma_deriv, lam, lam_inv,
     t_cur, t_nxt, class_labels
@@ -219,7 +219,8 @@ def krogstad_step(
     return x_nxt
 
 
-def expRK_based_4_5(
+# Algorithm 4
+def ostermann(
     net, x_cur, sigma, alpha, alpha_deriv, sigma_deriv, lam, lam_inv,
     t_cur, t_nxt, class_labels
 ):
@@ -277,7 +278,7 @@ def get_solver_by_name(solver):
         "dpm_solver_3": (dpm_solver_3, 3),
         "cox_matthews": (cox_matthews_step, 4),
         "krogstad": (krogstad_step, 4),
-        "5_nfe_4_order": (expRK_based_4_5, 5)
+        "ostermann": (ostermann, 5)
     }[solver]
 
 
