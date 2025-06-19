@@ -299,7 +299,7 @@ def deterministic_ablation_sampler(
     epsilon_s=1e-3, C_1=0.001, C_2=0.008, M=1000
 ):
     assert solver in IMPLEMENTED_SOLVERS
-    assert discretization in ['vp', 've', 'iddpm', 'edm']
+    assert discretization in ['vp', 've', 'iddpm', 'edm', 'dpm']
     assert schedule in ['vp', 've', 'linear']
 
     # Helper functions for VP & VE noise level schedules.
@@ -313,10 +313,10 @@ def deterministic_ablation_sampler(
     # Select default noise level range based on the specified time step discretization.
     if sigma_min is None:
         vp_def = vp_sigma(beta_d=19.9, beta_min=0.1)(t=epsilon_s)
-        sigma_min = {'vp': vp_def, 've': 0.02, 'iddpm': 0.002, 'edm': 0.002}[discretization]
+        sigma_min = {'vp': vp_def, 've': 0.02, 'iddpm': 0.002, 'edm': 0.002, 'dpm': 0.002}[discretization]
     if sigma_max is None:
         vp_def = vp_sigma(beta_d=19.9, beta_min=0.1)(t=1)
-        sigma_max = {'vp': vp_def, 've': 100, 'iddpm': 81, 'edm': 80}[discretization]
+        sigma_max = {'vp': vp_def, 've': 100, 'iddpm': 81, 'edm': 80, 'dpm': 80}[discretization]
 
     # Adjust noise levels based on what's supported by the network.
     sigma_min = max(sigma_min, net.sigma_min)
@@ -328,25 +328,6 @@ def deterministic_ablation_sampler(
 
     solver_step, nfe_per_step = get_solver_by_name(solver)
     num_steps = (nfe + nfe_per_step - 2) // nfe_per_step + 1 # ceil((nfe - 1) / nfe_per_step) -> normal steps, last step is euler
-
-    # Define time steps in terms of noise level.
-    step_indices = torch.arange(num_steps, dtype=torch.float64, device=latents.device)
-    if discretization == 'vp':
-        orig_t_steps = 1 + step_indices / (num_steps - 1) * (epsilon_s - 1)
-        sigma_steps = vp_sigma(vp_beta_d, vp_beta_min)(orig_t_steps)
-    elif discretization == 've':
-        orig_t_steps = (sigma_max ** 2) * ((sigma_min ** 2 / sigma_max ** 2) ** (step_indices / (num_steps - 1)))
-        sigma_steps = ve_sigma(orig_t_steps)
-    elif discretization == 'iddpm':
-        u = torch.zeros(M + 1, dtype=torch.float64, device=latents.device)
-        alpha_bar = lambda j: (0.5 * np.pi * j / M / (C_2 + 1)).sin() ** 2
-        for j in torch.arange(M, 0, -1, device=latents.device): # M, ..., 1
-            u[j - 1] = ((u[j] ** 2 + 1) / (alpha_bar(j - 1) / alpha_bar(j)).clip(min=C_1) - 1).sqrt()
-        u_filtered = u[torch.logical_and(u >= sigma_min, u <= sigma_max)]
-        sigma_steps = u_filtered[((len(u_filtered) - 1) / (num_steps - 1) * step_indices).round().to(torch.int64)]
-    else:
-        assert discretization == 'edm'
-        sigma_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
 
     # Define noise level schedule.
     if schedule == 'vp':
@@ -386,8 +367,42 @@ def deterministic_ablation_sampler(
     else:
         lam_inv = lambda l: torch.exp(-l) 
 
-    # Compute final time steps based on the corresponding noise levels.
-    t_steps = sigma_inv(net.round_sigma(sigma_steps))
+    # Define time steps in terms of noise level.
+    step_indices = torch.arange(num_steps, dtype=torch.float64, device=latents.device)
+    if discretization == 'vp':
+        orig_t_steps = 1 + step_indices / (num_steps - 1) * (epsilon_s - 1)
+        sigma_steps = vp_sigma(vp_beta_d, vp_beta_min)(orig_t_steps)
+    elif discretization == 've':
+        orig_t_steps = (sigma_max ** 2) * ((sigma_min ** 2 / sigma_max ** 2) ** (step_indices / (num_steps - 1)))
+        sigma_steps = ve_sigma(orig_t_steps)
+    elif discretization == 'iddpm':
+        u = torch.zeros(M + 1, dtype=torch.float64, device=latents.device)
+        alpha_bar = lambda j: (0.5 * np.pi * j / M / (C_2 + 1)).sin() ** 2
+        for j in torch.arange(M, 0, -1, device=latents.device): # M, ..., 1
+            u[j - 1] = ((u[j] ** 2 + 1) / (alpha_bar(j - 1) / alpha_bar(j)).clip(min=C_1) - 1).sqrt()
+        u_filtered = u[torch.logical_and(u >= sigma_min, u <= sigma_max)]
+        sigma_steps = u_filtered[((len(u_filtered) - 1) / (num_steps - 1) * step_indices).round().to(torch.int64)]
+    elif discretization == 'edm':
+        sigma_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+    else:
+        sigma_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+        print("sigma_inv ", sigma_inv(sigma_steps))
+        assert discretization == 'dpm'
+        t_start = torch.tensor(sigma_inv(sigma_max))
+        t_end = torch.tensor(sigma_inv(sigma_min))
+        lambda_start = lam(t_start)
+        lambda_end = lam(t_end)
+        lambda_steps = lambda_start + step_indices / (num_steps - 1) * (lambda_end - lambda_start)
+        print("lambda ", lambda_steps.tolist())
+        t_steps = lam_inv(lambda_steps)
+        print("t_steps ", t_steps.tolist())
+        print(f'{lambda_start=}, {lambda_end=}')
+        assert t_steps[0] > t_steps[-1]
+
+    if discretization != 'dpm':
+        # Compute final time steps based on the corresponding noise levels.
+        t_steps = sigma_inv(net.round_sigma(sigma_steps))
+
     t_steps = torch.cat([t_steps, torch.zeros_like(t_steps[:1])]) # t_N = 0
 
     # Main sampling loop.
@@ -468,7 +483,7 @@ def parse_int_list(s):
 @click.option('--rho',                     help='Time step exponent', metavar='FLOAT',                              type=click.FloatRange(min=0, min_open=True), default=7, show_default=True)
 
 @click.option('--solver',                  help='Ablate ODE solver', metavar='euler|heun',                          type=click.Choice(IMPLEMENTED_SOLVERS))
-@click.option('--disc', 'discretization',  help='Ablate time step discretization {t_i}', metavar='vp|ve|iddpm|edm', type=click.Choice(['vp', 've', 'iddpm', 'edm']))
+@click.option('--disc', 'discretization',  help='Ablate time step discretization {t_i}', metavar='vp|ve|iddpm|edm', type=click.Choice(['vp', 've', 'iddpm', 'edm', 'dpm']))
 @click.option('--schedule',                help='Ablate noise schedule sigma(t)', metavar='vp|ve|linear',           type=click.Choice(['vp', 've', 'linear']))
 @click.option('--scaling',                 help='Ablate signal scaling s(t)', metavar='vp|none',                    type=click.Choice(['vp', 'none']))
 
