@@ -32,20 +32,17 @@ IMPLEMENTED_SOLVERS = [
     'ostermann'
 ]
 
-def phi_0(h):
-    return torch.exp(h)
+
+def h_phi_1(h):
+    return torch.expm1(h)
 
 
-def phi_1(h):
-    return (torch.exp(h) - 1) / h
+def h_phi_2(h):
+    return (torch.expm1(h) / h) - 1
 
 
-def phi_2(h):
-    return (torch.exp(h) - h - 1) / (h**2)
-
-
-def phi_3(h):
-    return (torch.exp(h) - (h**2)/2 - h - 1) / (h**3)
+def h_phi_3(h):
+    return (torch.expm1(h) / (h**2)) - (1 / h) - 0.5
 
 
 def edm_to_dpm_denoiser(denoised, x, sigma):
@@ -96,12 +93,12 @@ def simple_second_order_step(
     s = lam_inv(lam_cur + h / 2)
 
     f_1 = dpm_net(net, class_labels, x_cur, alpha(t_cur), sigma(t_cur))
-    u = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * (h / 2) * phi_1(h / 2) * f_1
+    u = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * h_phi_1(h / 2) * f_1
     f_2 = dpm_net(net, class_labels, u, alpha(s), sigma(s))
     
-    b_1 = phi_1(h) - 2 * phi_2(h)
-    b_2 = 2 * phi_2(h)
-    x_nxt = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * h * (b_1 * f_1 + b_2 * f_2)
+    b_1 = h_phi_1(h) - 2 * h_phi_2(h)
+    b_2 = 2 * h_phi_2(h)
+    x_nxt = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * (b_1 * f_1 + b_2 * f_2)
     return x_nxt
 
 
@@ -115,10 +112,10 @@ def dpm_solver_2(
     s = lam_inv(lam_cur + h / 2)
 
     f_1 = dpm_net(net, class_labels, x_cur, alpha(t_cur), sigma(t_cur))
-    u = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * (h / 2) * phi_1(h / 2) * f_1
+    u = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * h_phi_1(h / 2) * f_1
     f_2 = dpm_net(net, class_labels, u, alpha(s), sigma(s))
     
-    x_nxt = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * h * phi_1(h) * f_2
+    x_nxt = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * h_phi_1(h) * f_2
     return x_nxt
 
 
@@ -137,16 +134,16 @@ def dpm_solver_3(
 
     f_1 = dpm_net(net, class_labels, x_cur, alpha(t_cur), sigma(t_cur))
     
-    u_1 = (alpha(s_1) / alpha(t_cur)) * x_cur - sigma(s_1) * (r1 * h) * phi_1(r1 * h) * f_1
+    u_1 = (alpha(s_1) / alpha(t_cur)) * x_cur - sigma(s_1) * h_phi_1(r1 * h) * f_1
     f_2 = dpm_net(net, class_labels, u_1, alpha(s_1), sigma(s_1))
     D_1 = f_2 - f_1
 
-    u_2 = (alpha(s_2) / alpha(t_cur)) * x_cur - sigma(s_2) * (r2 * h) * phi_1(r2 * h) * f_1 \
-        - (sigma(s_2) * r2 / r1) * r2 * h * phi_2(r2 * h) * D_1
+    u_2 = (alpha(s_2) / alpha(t_cur)) * x_cur - sigma(s_2) * h_phi_1(r2 * h) * f_1 \
+        - (sigma(s_2) * r2 / r1) * h_phi_2(r2 * h) * D_1
     f_3 = dpm_net(net, class_labels, u_2, alpha(s_2), sigma(s_2))
     D_2 = f_3 - f_1
 
-    x_nxt = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * h * phi_1(h) * f_1 - (sigma(t_nxt) / r2) * h * phi_2(h) * D_2
+    x_nxt = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * h_phi_1(h) * f_1 - (sigma(t_nxt) / r2) * h_phi_2(h) * D_2
     return x_nxt
 
 
@@ -162,23 +159,23 @@ def cox_matthews_step(
 
     f_1 = dpm_net(net, class_labels, x_cur, alpha(t_cur), sigma(t_cur))
 
-    u_2 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * (h / 2) * phi_1(h / 2) * f_1
+    u_2 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * h_phi_1(h / 2) * f_1
     f_2 = dpm_net(net, class_labels, u_2, alpha(s), sigma(s))
 
-    u_3 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * (h / 2) * phi_1(h / 2) * f_2
+    u_3 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * h_phi_1(h / 2) * f_2
     f_3 = dpm_net(net, class_labels, u_3, alpha(s), sigma(s))
 
-    u_4 = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * h * (
-        0.5 * phi_1(h / 2) * (phi_0(h / 2) - 1) * f_1 +
-        phi_1(h / 2) * f_3
+    u_4 = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * (
+        h_phi_1(h / 2) * (torch.expm1(h/2)) * f_1 +
+        2 * h_phi_1(h / 2) * f_3
     )
     f_4 = dpm_net(net, class_labels, u_4, alpha(t_nxt), sigma(t_nxt))
 
-    b_1 = phi_1(h) - 3 * phi_2(h) + 4 * phi_3(h)
-    b_2 = b_3 = 2 * phi_2(h) - 4 * phi_3(h)
-    b_4 = 4 * phi_3(h) - phi_2(h)
+    b_1 = h_phi_1(h) - 3 * h_phi_2(h) + 4 * h_phi_3(h)
+    b_2 = b_3 = 2 * h_phi_2(h) - 4 * h_phi_3(h)
+    b_4 = 4 * h_phi_3(h) - h_phi_2(h)
 
-    x_nxt = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * h * (b_1 * f_1 + b_2 * f_2 + b_3 * f_3 + b_4 * f_4)
+    x_nxt = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * (b_1 * f_1 + b_2 * f_2 + b_3 * f_3 + b_4 * f_4)
     return x_nxt
 
 
@@ -194,28 +191,28 @@ def krogstad_step(
 
     f_1 = dpm_net(net, class_labels, x_cur, alpha(t_cur), sigma(t_cur))
 
-    u_2 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * (h / 2) * phi_1(h / 2) * f_1
+    u_2 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * h_phi_1(h / 2) * f_1
     f_2 = dpm_net(net, class_labels, u_2, alpha(s), sigma(s))
     D_2 = f_2 - f_1
 
-    u_3 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * h * (
-        0.5 * phi_1(h / 2) * f_1 + 
-        phi_2(h / 2) * D_2
+    u_3 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * (
+        h_phi_1(h / 2) * f_1 + 
+        2 * h_phi_2(h / 2) * D_2
     )
     f_3 = dpm_net(net, class_labels, u_3, alpha(s), sigma(s))
     D_3 = f_3 - f_1
 
-    u_4 = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * h * (
-        phi_1(h) * f_1 +
-        2 * phi_2(h) * D_3
+    u_4 = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * (
+        h_phi_1(h) * f_1 +
+        2 * h_phi_2(h) * D_3
     )
     f_4 = dpm_net(net, class_labels, u_4, alpha(t_nxt), sigma(t_nxt))
 
-    b_1 = phi_1(h) - 3 * phi_2(h) + 4 * phi_3(h)
-    b_2 = b_3 = 2 * phi_2(h) - 4 * phi_3(h)
-    b_4 = 4 * phi_3(h) - phi_2(h)
+    b_1 = h_phi_1(h) - 3 * h_phi_2(h) + 4 * h_phi_3(h)
+    b_2 = b_3 = 2 * h_phi_2(h) - 4 * h_phi_3(h)
+    b_4 = 4 * h_phi_3(h) - h_phi_2(h)
 
-    x_nxt = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * h * (b_1 * f_1 + b_2 * f_2 + b_3 * f_3 + b_4 * f_4)
+    x_nxt = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * (b_1 * f_1 + b_2 * f_2 + b_3 * f_3 + b_4 * f_4)
     return x_nxt
 
 
@@ -231,38 +228,38 @@ def ostermann(
 
     f_1 = dpm_net(net, class_labels, x_cur, alpha(t_cur), sigma(t_cur))
 
-    u_2 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * (h / 2) * phi_1(h / 2) * f_1
+    u_2 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * h_phi_1(h / 2) * f_1
     f_2 = dpm_net(net, class_labels, u_2, alpha(s), sigma(s))
     D_2 = f_2 - f_1
 
-    u_3 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * h * (
-        0.5 * phi_1(h / 2) * f_1 + 
-        phi_2(h / 2) * D_2
+    u_3 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * (
+        h_phi_1(h / 2) * f_1 + 
+        2 * h_phi_2(h / 2) * D_2
     )
     f_3 = dpm_net(net, class_labels, u_3, alpha(s), sigma(s))
     D_3 = f_3 - f_1
 
-    u_4 = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * h * (
-        phi_1(h) * f_1 +
-        phi_2(h) * (D_2 + D_3)
+    u_4 = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * (
+        h_phi_1(h) * f_1 +
+        h_phi_2(h) * (D_2 + D_3)
     )
     f_4 = dpm_net(net, class_labels, u_4, alpha(t_nxt), sigma(t_nxt))
     D_4 = f_4 - f_1
 
-    u_5 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * h * (
-        phi_1(0.5 * h) * 0.5 * f_1 + \
-        phi_2(0.5 * h) * 0.25 * (2 * D_2 + 2 * D_3 - D_4) + \
-        phi_3(0.5 * h) * 0.5 * (-D_2 - D_3 + D_4) + \
-        phi_2(h) * 0.25 * (D_2 + D_3 - D_4) + \
-        phi_3(h) * (-D_2 - D_3 + D_4)
+    u_5 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * (
+        h_phi_1(0.5 * h) * f_1 + \
+        h_phi_2(0.5 * h) * 0.5 * (2 * D_2 + 2 * D_3 - D_4) + \
+        h_phi_3(0.5 * h) * (-D_2 - D_3 + D_4) - \
+        h_phi_2(h) * 0.25 * (D_2 + D_3 - D_4) - \
+        h_phi_3(h) * (-D_2 - D_3 + D_4)
     )
     f_5 = dpm_net(net, class_labels, u_5, alpha(s), sigma(s))
     D_5 = f_5 - f_1
 
-    x_nxt = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * h * (
-        phi_1(h) * f_1 + \
-        phi_2(h) * (-D_4 + 4 * D_5) + \
-        phi_3(h) * (4 * D_4 - 8 * D_5)
+    x_nxt = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * (
+        h_phi_1(h) * f_1 + \
+        h_phi_2(h) * (-D_4 + 4 * D_5) + \
+        h_phi_3(h) * (4 * D_4 - 8 * D_5)
     )
 
     return x_nxt
@@ -386,17 +383,17 @@ def deterministic_ablation_sampler(
         sigma_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
     else:
         sigma_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
-        print("sigma_inv ", sigma_inv(sigma_steps))
+        # print("sigma_inv ", sigma_inv(sigma_steps))
         assert discretization == 'dpm'
         t_start = torch.tensor(sigma_inv(sigma_max))
         t_end = torch.tensor(sigma_inv(sigma_min))
         lambda_start = lam(t_start)
         lambda_end = lam(t_end)
         lambda_steps = lambda_start + step_indices / (num_steps - 1) * (lambda_end - lambda_start)
-        print("lambda ", lambda_steps.tolist())
+        # print("lambda ", lambda_steps.tolist())
         t_steps = lam_inv(lambda_steps)
-        print("t_steps ", t_steps.tolist())
-        print(f'{lambda_start=}, {lambda_end=}')
+        # print("t_steps ", t_steps.tolist())
+        # print(f'{lambda_start=}, {lambda_end=}')
         assert t_steps[0] > t_steps[-1]
 
     if discretization != 'dpm':
