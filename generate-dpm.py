@@ -28,7 +28,7 @@ IMPLEMENTED_SOLVERS = [
     'euler', 'heun', 
     'dpm_solver_2', 'dpm_solver_3', 
     'simple_second_order', 
-    'cox_matthews', 'krogstad', 
+    'cox_matthews', 'krogstad', 'krogstad_2', 
     'ostermann'
 ]
 
@@ -216,6 +216,34 @@ def krogstad_step(
     return x_nxt
 
 
+def krogstad_step_2(
+    net, x_cur, sigma, alpha, alpha_deriv, sigma_deriv, lam, lam_inv,
+    t_cur, t_nxt, class_labels
+):
+    lam_cur = lam(t_cur)
+    lam_nxt = lam(t_nxt)
+    h = lam_nxt - lam_cur
+    s = lam_inv(lam_cur + h / 2)
+
+    f_1 = dpm_net(net, class_labels, x_cur, alpha(t_cur), sigma(t_cur))
+
+    u_2 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * h_phi_1(h / 2) * f_1
+    f_2 = dpm_net(net, class_labels, u_2, alpha(s), sigma(s))
+
+    u_3 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * h_phi_1(h / 2) * f_2
+    f_3 = dpm_net(net, class_labels, u_3, alpha(s), sigma(s))
+
+    u_4 = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * h_phi_1(h) * f_3
+    f_4 = dpm_net(net, class_labels, u_4, alpha(t_nxt), sigma(t_nxt))
+
+    b_1 = h_phi_1(h) - 3 * h_phi_2(h) + 4 * h_phi_3(h)
+    b_2 = b_3 = 2 * h_phi_2(h) - 4 * h_phi_3(h)
+    b_4 = 4 * h_phi_3(h) - h_phi_2(h)
+
+    x_nxt = (alpha(t_nxt) / alpha(t_cur)) * x_cur - sigma(t_nxt) * (b_1 * f_1 + b_2 * f_2 + b_3 * f_3 + b_4 * f_4)
+    return x_nxt
+
+
 # Algorithm 4
 def ostermann(
     net, x_cur, sigma, alpha, alpha_deriv, sigma_deriv, lam, lam_inv,
@@ -247,11 +275,11 @@ def ostermann(
     D_4 = f_4 - f_1
 
     u_5 = (alpha(s) / alpha(t_cur)) * x_cur - sigma(s) * (
-        h_phi_1(0.5 * h) * f_1 + \
-        h_phi_2(0.5 * h) * 0.5 * (2 * D_2 + 2 * D_3 - D_4) + \
-        h_phi_3(0.5 * h) * (-D_2 - D_3 + D_4) - \
-        h_phi_2(h) * 0.25 * (D_2 + D_3 - D_4) - \
-        h_phi_3(h) * (-D_2 - D_3 + D_4)
+        h_phi_1(0.5 * h) * f_1 - \
+        h_phi_2(-0.5 * h) * 0.5 * (2 * D_2 + 2 * D_3 - D_4) - \
+        h_phi_3(-0.5 * h) * (-D_2 - D_3 + D_4) - \
+        h_phi_2(-h) * 0.25 * (D_2 + D_3 - D_4) - \
+        h_phi_3(-h) * (-D_2 - D_3 + D_4)
     )
     f_5 = dpm_net(net, class_labels, u_5, alpha(s), sigma(s))
     D_5 = f_5 - f_1
@@ -275,6 +303,7 @@ def get_solver_by_name(solver):
         "dpm_solver_3": (dpm_solver_3, 3),
         "cox_matthews": (cox_matthews_step, 4),
         "krogstad": (krogstad_step, 4),
+        "krogstad_2": (krogstad_step_2, 4),
         "ostermann": (ostermann, 5)
     }[solver]
 
@@ -284,7 +313,7 @@ def get_solver_by_nfe(nfe):
         1: euler_step,
         2: dpm_solver_2,
         3: dpm_solver_3,
-        4: cox_matthews_step,
+        4: krogstad_step,
     }[nfe]
 
 
