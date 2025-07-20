@@ -79,4 +79,55 @@ class EDMLoss:
         loss = weight * ((D_yn - y) ** 2)
         return loss
 
+@persistence.persistent_class
+class DiscreteDDPLoss:
+    def __init__(self, sigma_data=0.5):
+        self.sigma_data = sigma_data
+        self.alphas = None
+        self.sigmas = None
+        self.Ut = None 
+
+    def setup_schedules(self, net):
+        """Initialize schedules from network"""
+        with torch.no_grad():
+            self.alphas = net.alphas
+            self.sigmas = net.sigmas
+            if hasattr(net, 'Ut'):
+                self.Ut = net.Ut
+
+    def __call__(self, net, images, labels=None, augment_pipe=None):
+        if self.alphas is None:
+            self.setup_schedules(net)
+        print("loss")
+
+        # Generowanie z rozkładu jednostajnego
+        t = torch.randint(1, len(self.alphas), (images.shape[0],), device=images.device)
+        
+        alpha_t, sigma_t = self.alphas[t], self.sigmas[t]
+        alpha_s, sigma_s = self.alphas[t-1], self.sigmas[t-1]
+        
+        # Obliczanie współczynników
+        # chwilowo wstawienie U_t jako 1 jako stała
+        gamma_s = (alpha_s/sigma_s)**2 * (sigma_t/alpha_t)**2
+        eta_s = (gamma_s - 1)/(torch.sqrt(gamma_s) + torch.sqrt(gamma_s - 1))
+        
+        # Generowanie szumu
+        eps_t = torch.randn_like(images)
+        eps_s = torch.randn_like(images)
+        
+        epsilon_t = eps_t
+        epsilon_s = torch.sqrt(1 - eta_s**2) * epsilon_t + eta_s * eps_s
+        
+        # Obliczanie z_t i z_s
+        z_t = alpha_t.view(-1,1,1,1)*images + sigma_t.view(-1,1,1,1)*epsilon_t
+        z_s = alpha_s.view(-1,1,1,1)*images + sigma_s.view(-1,1,1,1)*epsilon_s
+        
+        with torch.no_grad():
+            u_target = (z_s - alpha_s.view(-1,1,1,1)*images)/(sigma_s.view(-1,1,1,1))
+        
+        u_pred = net(z_t, sigma_t, labels)
+        
+        # Simplified loss (Eq. 16)
+        loss = 0.5 * ((u_target - u_pred)**2).mean()
+        return loss
 #----------------------------------------------------------------------------

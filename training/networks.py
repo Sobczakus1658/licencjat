@@ -670,4 +670,78 @@ class EDMPrecond(torch.nn.Module):
     def round_sigma(self, sigma):
         return torch.as_tensor(sigma)
 
+@persistence.persistent_class
+class DiscreteDDPPrecond(EDMPrecond):
+    def __init__(self,
+        img_resolution,
+        img_channels,
+        label_dim=0,
+        use_fp16=False, 
+        sigma_min=0,
+        sigma_max=float('inf'),
+        sigma_data=0.5, 
+        num_timesteps=1000,
+        model_type='DhariwalUNet',
+        **model_kwargs):
+
+        super().__init__(img_resolution,
+            img_channels,
+            label_dim,
+            use_fp16, 
+            sigma_min,
+            sigma_max,
+            sigma_data,
+            model_type,
+            **model_kwargs)
+        self.num_timesteps = num_timesteps
+        
+        t = torch.linspace(0, 1, num_timesteps)
+        self.register_buffer('alphas', torch.cos(t * (torch.pi/2)))
+        self.register_buffer('sigmas', torch.sin(t * (torch.pi/2)))
+        
+        # parametryzacja dla epsilona
+        self.Ut = torch.nn.Parameter(torch.ones(num_timesteps-1))
+        
+        self.setup_eta_schedule()
+
+    def setup_eta_schedule(self):
+        with torch.no_grad():
+            gamma = (self.alphas[:-1]/self.sigmas[:-1])**2 * (self.sigmas[1:]/self.alphas[1:])**2
+            
+            min_ratio = (torch.sqrt(gamma - 1) / self.Ut.abs()).max().clamp(min=1.0)
+            self.Ut.data *= min_ratio
+            
+            numerator = gamma - 1
+            denominator = torch.sqrt(gamma)*self.Ut**2 + torch.sqrt(self.Ut**2 + 1 - gamma)
+            etas = numerator / denominator
+            
+            self.register_buffer('etas', etas)
+
+    def forward(self, x, sigma, class_labels=None, force_fp32=False, **model_kwargs):
+        print("forward")
+        # parametry z EDM
+        x = x.to(torch.float32)
+        sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
+        c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)
+        c_out = sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2).sqrt()
+        c_in = 1 / (self.sigma_data ** 2 + sigma ** 2).sqrt()
+        c_noise = sigma.log() / 4
+
+        t_idx = self.sigma_to_t(sigma)
+        eta_t = self.etas[t_idx] if t_idx < len(self.etas) else self.etas[-1]
+
+        # Generowanie lossa
+        noise = torch.randn_like(x)
+        for i in range(len(eta_t)):
+            noise = torch.sqrt(1 - eta_t[i]**2) * noise + eta_t[i] * torch.randn_like(noise)
+
+        # Forward pass
+        F_x = self.model((c_in * x).to(x.dtype), c_noise.flatten(), 
+              class_labels=class_labels, epsilons=noise, **model_kwargs)
+        D_x = c_skip * x + c_out * F_x.to(torch.float32)
+        return D_x
+
+    def sigma_to_t(self, sigma):
+        distances = torch.abs(self.sigmas - sigma.unsqueeze(1))
+        return torch.argmin(distances, dim=1)
 #----------------------------------------------------------------------------
