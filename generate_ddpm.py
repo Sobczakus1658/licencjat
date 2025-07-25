@@ -17,6 +17,8 @@ def custom_generate_image_grid(
 
     with dnnlib.util.open_url(network_pkl) as f:
         net_data = pickle.load(f)
+    print(type(net_data['ema']))
+    return 
     net = net_data['ema']
     net = net.to(device)
     net.eval()
@@ -80,7 +82,7 @@ def custom_generate_image_grid(
 
 def main():
     custom_generate_image_grid(
-        network_pkl='database/network.pkl',
+        network_pkl='network/network.pkl',
         dest_path='custom_samples.png',
         seed=42,
         gridw=8,

@@ -1,0 +1,17 @@
+#!/bin/bash -l
+#SBATCH --job-name="nvidia-train"
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:4
+#SBATCH --cpus-per-task=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --account=g98-2103
+#SBATCH --time=48:00:00
+#SBATCH --qos=normal
+
+singularity exec --nv --bind ~/:/scratch ~/nvidia-container.sif ./train.sh 1> output/$SLURM_JOB_ID.o$
+
+
+
+
+
+
