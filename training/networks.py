@@ -672,69 +672,76 @@ class EDMPrecond(torch.nn.Module):
 
 #----------------------------------------------------------------------------
 @persistence.persistent_class
-class DiscreteDDPPrecond(EDMPrecond):
+class DiscreteDDPPrecond(torch.nn.Module):
     def __init__(self,
         img_resolution,
         img_channels,
         label_dim=0,
-        use_fp16=False, 
-        sigma_min=0,
-        sigma_max=float('inf'),
-        sigma_data=0.5, 
+        use_fp16=False,
+        sigma_data=0.5,
         num_timesteps=1000,
         model_type='DhariwalUNet',
-        **model_kwargs):
-        super().__init__(img_resolution,
-            img_channels,
-            label_dim,
-            use_fp16, 
-            sigma_min,
-            sigma_max,
-            sigma_data,
-            model_type,
-            **model_kwargs)
+        **model_kwargs
+    ):
+        super().__init__()
+        self.img_resolution = img_resolution
+        self.img_channels = img_channels
+        self.label_dim = label_dim
+        self.use_fp16 = use_fp16
+        self.sigma_data = sigma_data
         self.num_timesteps = num_timesteps
 
+        # Wzory wziąłem z pliku https://www.mimuw.edu.pl/~pokar/DeepLearn/4Mateusz/not_main.pdf
+        # ustawienie alpha i sigma
         t = torch.linspace(0, 1, num_timesteps)
-        self.register_buffer('alphas', torch.cos(t * (torch.pi/2)))
-        self.register_buffer('sigmas', torch.sin(t * (torch.pi/2)))
+        alphas = torch.cos(t * (torch.pi / 2))
+        sigmas = torch.sin(t * (torch.pi / 2))
+        self.register_buffer('alphas', alphas)
+        self.register_buffer('sigmas', sigmas)
 
-         # parametryzacja dla epsilona
+        # parametryzacja dla epsilona
         self.Ut = torch.nn.Parameter(torch.ones(num_timesteps-1))
         self.setup_eta_schedule()
+
     def setup_eta_schedule(self):
         with torch.no_grad():
-
+            # wzór (14)
             gamma = (self.alphas[:-1]/self.sigmas[:-1])**2 * (self.sigmas[1:]/self.alphas[1:])**2
+            # wzór (18)
             min_ratio = (torch.sqrt(gamma - 1) / self.Ut.abs()).max().clamp(min=1.0)
             self.Ut.data *= min_ratio
+            # wzór z końca kartki
             numerator = gamma - 1
             denominator = torch.sqrt(gamma)*self.Ut**2 + torch.sqrt(self.Ut**2 + 1 - gamma)
             etas = numerator / denominator
             self.register_buffer('etas', etas)
 
     def forward(self, x, sigma, class_labels=None, force_fp32=False, **model_kwargs):
-        # parametry z EDM
+        # parametry z EDM - nie wiem czy finalnie będziemy to ruszać, może to do usunięcia
         x = x.to(torch.float32)
         sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
         c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)
         c_out = sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2).sqrt()
         c_in = 1 / (self.sigma_data ** 2 + sigma ** 2).sqrt()
         c_noise = sigma.log() / 4
-        t_idx = self.sigma_to_t(sigma)  # shape: [N]
-        eta_t = torch.where(
-            t_idx < len(self.etas),
-            self.etas[t_idx],
-            self.etas[-1]
-        ).reshape(-1,1,1,1)
-        # Generowanie lossa
-        noise = torch.randn_like(x)
-        for i in range(len(eta_t)):
-            noise = torch.sqrt(1 - eta_t[i]**2) * noise + eta_t[i] * torch.randn_like(noise)
-        # Forward pass
-        model = self.module.model if hasattr(self, 'module') else self.model 
-        F_x = model((c_in * x).to(x.dtype), c_noise.flatten(), 
-              class_labels=class_labels, **model_kwargs)
+
+        # sigma jest funkcją monotoniczną, więc jest równowartościowa.
+        # Ponieważ operujemy na dyskretnych krokach czasowych t,
+        # musimy znaleźć indeks t, dla którego sigma_t jest najbliższe podanej wartości sigma
+
+        t_idx = self.sigma_to_t(sigma)
+        alpha_t = self.alphas[t_idx].reshape(-1, 1, 1, 1)
+        sigma_t = self.sigmas[t_idx].reshape(-1, 1, 1, 1)
+        eta_t = self.etas[t_idx].reshape(-1, 1, 1, 1)
+
+        # wzór (1)
+        eps_t = torch.randn_like(x)
+        eps_t_prime = torch.randn_like(x)
+        zs = alpha_t * x + sigma_t * torch.sqrt(1 - eta_t**2) * eps_t + sigma_t * eta_t * eps_t_prime
+
+        F_x = self.model(zs.to(x.dtype), c_noise.flatten(), class_labels=class_labels, **model_kwargs)
+
+        # ro również może do wywalenia, wzorowane na EDM
         D_x = c_skip * x + c_out * F_x.to(torch.float32)
         return D_x
 
