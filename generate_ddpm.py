@@ -15,24 +15,9 @@ def custom_generate_image_grid(
     batch_size = gridw * gridh
     torch.manual_seed(seed)
 
-    # Load network weights from pickle
-    print(f'Loading network from "{network_pkl}"...')
     with dnnlib.util.open_url(network_pkl) as f:
         net_data = pickle.load(f)
-
-    # Instantiate your custom model
-    net = DiscreteDDPPrecond(
-        img_resolution=256,  # adjust to your model's resolution
-        img_channels=3,
-        label_dim=net_data.get('label_dim', 0),
-        use_fp16=False,
-        sigma_min=sigma_min,
-        sigma_max=sigma_max,
-        sigma_data=0.5,
-        num_timesteps=1000,
-        model_type='DhariwalUNet',
-    )
-    net.load_state_dict(net_data['ema'].state_dict())
+    net = net_data['ema']
     net = net.to(device)
     net.eval()
 
@@ -94,9 +79,8 @@ def custom_generate_image_grid(
     print('Done.')
 
 def main():
-    # Example usage, adjust paths and parameters as needed
     custom_generate_image_grid(
-        network_pkl='my_network/network.pkl',
+        network_pkl='database/network.pkl',
         dest_path='custom_samples.png',
         seed=42,
         gridw=8,
