@@ -81,28 +81,23 @@ class EDMLoss:
 
 #----------------------------------------------------------------------------
 @persistence.persistent_class
-
-
 class DiscreteDDPLoss:
     def __init__(self, sigma_data=0.5):
         self.sigma_data = sigma_data
         self.alphas = None
         self.sigmas = None
-        self.Ut = None 
 
     def setup_schedules(self, net):
-        """Initialize schedules from network"""
         net_model = net.module if hasattr(net, 'module') else net
         with torch.no_grad():
             self.alphas = net_model.alphas
             self.sigmas = net_model.sigmas
-            if hasattr(net, 'Ut'):
-                self.Ut = net.Ut
 
     def __call__(self, net, images, labels=None, augment_pipe=None):
         if self.alphas is None:
             self.setup_schedules(net)
 
+        # Mỏj loss jest w postaci (16), więc muszę wylosować t i obliczyć ε_t
         # Generowanie z rozkładu jednostajnego
         t = torch.randint(1, len(self.alphas), (images.shape[0],), device=images.device)
         alpha_t, sigma_t = self.alphas[t], self.sigmas[t]
@@ -120,21 +115,21 @@ class DiscreteDDPLoss:
         eps_t = torch.randn_like(images)
         eps_s = torch.randn_like(images)
 
+        # Skorzystam ze wzoru 2, tylko przepiszę go że to jest z_s = alpha_s * x + sigma_s * epsilon_s
+        # gdzie epsilon_s jest zadany wzorem poniżej, w skó¶cie wyłączam sigmę przed nawias
         epsilon_t = eps_t
-        print(f"eta_s min/max: {eta_s.shape}")
-        print(f"epsilon_t shape: {eps_t.shape}")
-        
         epsilon_s = torch.sqrt(1 - eta_s**2) * epsilon_t + eta_s * eps_s
 
         # Obliczanie z_t i z_s
         z_t = alpha_t.view(-1,1,1,1)*images + sigma_t.view(-1,1,1,1)*epsilon_t
         z_s = alpha_s.view(-1,1,1,1)*images + sigma_s.view(-1,1,1,1)*epsilon_s
 
+        # Przewidywanie ε_t, ze wzoru (2)
         with torch.no_grad():
             u_target = (z_s - alpha_s.view(-1,1,1,1)*images)/(sigma_s.view(-1,1,1,1))
         u_pred = net(z_t, sigma_t, labels)
 
-        # Simplified loss (Eq. 16)
+        # wzór 16
         loss = 0.5 * ((u_target - u_pred)**2).mean()
         
         return loss
