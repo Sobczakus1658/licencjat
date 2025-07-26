@@ -1,1 +1,1 @@
-torchrun --standalone --nproc_per_node=4 train.py --outdir=training --data=cifar10-32x32.zip --cond=1 --arch=ddpmpp --batch-gpu=64 --precond=discrete-ddp
+torchrun --standalone --nproc_per_node=4 ../train.py --outdir=training --data=cifar10-32x32.zip --cond=1 --arch=ddpmpp --batch-gpu=64 --precond=discrete-ddp

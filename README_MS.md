@@ -13,9 +13,12 @@
 
 7. Jeśli trening przebiega bez błędów, w podanym folderze będą pojawiać się snapshoty wag modelu. Im wyższy numer snapshotu, tym bardziej wytrenowany model.
 
-## Przydatne skrypty
+## Żeby odpalić discrete-ddp
 
-Na początku nadaj uprawnienia do wykonywania skryptów:
+Wejdź w script i wywołaj `./train.sh`, ewentualnie zmień parametry 
+
+## Przydatne skrypty
+Na początku może warto sprawdzić czy ścieżki do plików są odpowiednie, bo pisałem to pod siebie, a następnie nadaj uprawnienia do wykonywania skryptów:
 ```bash
 chmod u+x *.sh
 ```
