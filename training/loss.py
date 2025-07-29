@@ -23,14 +23,14 @@ class VPLoss:
         self.beta_min = beta_min
         self.epsilon_t = epsilon_t
 
-    def __call__(self, net, images, labels, augment_pipe=None):
-        rnd_uniform = torch.rand([images.shape[0], 1, 1, 1], device=images.device)
-        sigma = self.sigma(1 + rnd_uniform * (self.epsilon_t - 1))
+    def __call__(self, net, images, labels, augment_pipe=None, fixed_t=None, do_weight=True):
+        t = torch.rand([images.shape[0], 1, 1, 1], device=images.device) if fixed_t is None else torch.as_tensor(fixed_t)
+        sigma = self.sigma(1 + t * (self.epsilon_t - 1))
         weight = 1 / sigma ** 2
         y, augment_labels = augment_pipe(images) if augment_pipe is not None else (images, None)
         n = torch.randn_like(y) * sigma
         D_yn = net(y + n, sigma, labels, augment_labels=augment_labels)
-        loss = weight * ((D_yn - y) ** 2)
+        loss = weight * ((D_yn - y) ** 2) if do_weight else ((D_yn - y) ** 2)
         return loss
 
     def sigma(self, t):
@@ -48,9 +48,9 @@ class VELoss:
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
 
-    def __call__(self, net, images, labels, augment_pipe=None):
-        rnd_uniform = torch.rand([images.shape[0], 1, 1, 1], device=images.device)
-        sigma = self.sigma_min * ((self.sigma_max / self.sigma_min) ** rnd_uniform)
+    def __call__(self, net, images, labels, augment_pipe=None, fixed_t=None):
+        t = torch.rand([images.shape[0], 1, 1, 1], device=images.device) if fixed_t is None else torch.as_tensor(fixed_t)
+        sigma = self.sigma_min * ((self.sigma_max / self.sigma_min) ** t)
         weight = 1 / sigma ** 2
         y, augment_labels = augment_pipe(images) if augment_pipe is not None else (images, None)
         n = torch.randn_like(y) * sigma
@@ -69,9 +69,9 @@ class EDMLoss:
         self.P_std = P_std
         self.sigma_data = sigma_data
 
-    def __call__(self, net, images, labels=None, augment_pipe=None):
-        rnd_normal = torch.randn([images.shape[0], 1, 1, 1], device=images.device)
-        sigma = (rnd_normal * self.P_std + self.P_mean).exp()
+    def __call__(self, net, images, labels=None, augment_pipe=None, fixed_t=None):
+        t = torch.randn([images.shape[0], 1, 1, 1], device=images.device) if fixed_t is None else torch.as_tensor(fixed_t)
+        sigma = (t * self.P_std + self.P_mean).exp()
         weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
         y, augment_labels = augment_pipe(images) if augment_pipe is not None else (images, None)
         n = torch.randn_like(y) * sigma

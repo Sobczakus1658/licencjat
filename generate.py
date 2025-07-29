@@ -19,9 +19,330 @@ import PIL.Image
 import dnnlib
 from torch_utils import distributed as dist
 
+def edm_to_dpm_denoiser(denoised, x, sigma):
+    return (x - denoised) / sigma
+
+
+def dpm_net(net, class_labels, x, sigma):
+    denoised = net(x, sigma, class_labels).to(torch.float64)
+    return edm_to_dpm_denoiser(denoised, x, sigma)
+
+
+# Simple, alpha(t) = 1, sigma(t) = t
+# => lambda(t) = -log(t)
+# => t_lambda(x) = exp(-x)
+def dpm_solver_2_step(net, class_labels, x, t_cur, t_nxt):
+    def dpm_lambda(t):
+        return -torch.log(t)
+    
+    def dpm_t_lambda(l):
+        return torch.exp(-l)
+
+    lambda_cur = dpm_lambda(t_cur)
+    lambda_nxt = dpm_lambda(t_nxt)
+    h = lambda_nxt - lambda_cur
+
+    # # Step 1
+    s = dpm_t_lambda((lambda_cur + lambda_nxt) / 2)
+
+    # # Step 2
+    eps_x = dpm_net(net, class_labels, x, t_cur)
+    u = x - s * (torch.exp(h / 2) - 1) * eps_x
+
+    # Step 3
+    eps_u = dpm_net(net, class_labels, u, s)
+
+    ### Poly
+    # d_eps_x = (eps_u - eps_x) * 2
+    # x_nxt = x - t_nxt * (torch.exp(h) - 1) * eps_x - t_nxt * (h/2 + (h*h)/6) * d_eps_x 
+
+    ## Bombardilo crocodilo (GIGACHAD)
+    d_eps_x = (eps_u - eps_x) / (h / 2)
+    x_nxt = x - t_nxt * (torch.exp(h) - 1) * eps_x - t_nxt * (-h - 1 + t_cur / t_nxt) * d_eps_x
+
+    ## Virgin DPM (jedno i to samo)
+    # phi_1 = torch.expm1(h)
+    # x_nxt = (
+    #                 x
+    #                 - (t_nxt * phi_1) * eps_x
+    #                 - (t_nxt * phi_1) * (eps_u - eps_x)
+    #             )
+    ## Virgin DPM 2
+    # x_nxt = x - t_nxt * (torch.exp(h) - 1) * eps_u 
+
+    return x_nxt
+
+
+# Simple, see solver_2
+def dpm_solver_3_step(net, class_labels, x, t_cur, t_nxt):
+    def dpm_lambda(t):
+        return -torch.log(t)
+    
+    def dpm_t_lambda(l):
+        return torch.exp(-l)
+    
+    # Fixed, TODO: specify as args
+    r1 = 1 / 3
+    r2 = 2 / 3
+    
+    lambda_cur = dpm_lambda(t_cur)
+    lambda_nxt = dpm_lambda(t_nxt)
+    h = lambda_nxt - lambda_cur
+
+    # Step 1
+    s_cur = dpm_t_lambda(lambda_cur + r1 * h)
+    s_nxt = dpm_t_lambda(lambda_cur + r2 * h)
+
+    # Step 2
+    eps_x = dpm_net(net, class_labels, x, t_cur)
+    u_cur = x - s_cur * (torch.exp(r1 * h) - 1) * eps_x
+
+    # Step 3
+    D_cur = dpm_net(net, class_labels, u_cur, s_cur) - eps_x
+
+    # Step 4
+    u_nxt = x - s_nxt * (torch.exp(r2 * h) - 1) * eps_x - (s_nxt * r2 / r1) * ((torch.exp(r2 * h) - 1) / (r2 * h) - 1) * D_cur
+
+    # Step 5
+    D_nxt = dpm_net(net, class_labels, u_nxt, s_nxt) - eps_x
+
+    # Step 6
+    x_nxt = x - t_nxt * (torch.exp(h) - 1) * eps_x - (t_nxt / r2) * ((torch.exp(h) - 1) / h - 1) * D_nxt
+    
+    return x_nxt
+
+def phi_0(h):
+    return torch.exp(h)
+
+def phi_1(h):
+    return (torch.exp(h) - 1) / h
+
+def phi_2(h):
+    return (torch.exp(h) - h - 1) / (h * h)
+
+def phi_3(h):
+    return (torch.exp(h) - h*h/2 - h - 1) / (h * h * h)
+
+# Equiv to dpm_solver_2 bombardilo crocodilo
+def expRK2_step(net, class_labels, x, t_cur, t_nxt):
+    def dpm_lambda(t):
+        return -torch.log(t)
+    
+    def dpm_t_lambda(l):
+        return torch.exp(-l)
+
+    lambda_cur = dpm_lambda(t_cur)
+    lambda_nxt = dpm_lambda(t_nxt)
+    h = lambda_nxt - lambda_cur
+
+    c2 = 0.5
+    u_n = x
+
+    s = dpm_t_lambda(lambda_cur + c2 * h)
+    net_x = dpm_net(net, class_labels, x, t_cur)
+
+    U_n2 = u_n - phi_1(c2 * h) * c2 * h * s * net_x
+    net_U_n2 = dpm_net(net, class_labels, U_n2, s)
+    D_n2 = net_U_n2 - net_x
+
+    u_n1 = u_n - t_nxt * (phi_1(h) * h * net_x + phi_2(h) * h * (1 / c2) * D_n2)
+
+    return u_n1
+
+
+def expRK3_step(net, class_labels, x, t_cur, t_nxt):
+    def dpm_lambda(t):
+        return -torch.log(t)
+    
+    def dpm_t_lambda(l):
+        return torch.exp(-l)
+
+    lambda_cur = dpm_lambda(t_cur)
+    lambda_nxt = dpm_lambda(t_nxt)
+    h = lambda_nxt - lambda_cur
+
+    c2 = 1 / 3
+    u_n = x
+
+    s1 = dpm_t_lambda(lambda_cur + c2 * h)
+    s2 = dpm_t_lambda(lambda_cur + (2 / 3) * h)
+    
+    net_x = dpm_net(net, class_labels, x, t_cur)
+
+    U_n2 = u_n - s1 * h * (phi_1(c2 * h) * c2 * net_x)
+    net_U_n2 = dpm_net(net, class_labels, U_n2, s1)
+    D_n2 = net_U_n2 - net_x
+
+    U_n3 = u_n - s2 * h * (phi_1((2 / 3) * h) * (2 / 3) * net_x + phi_2((2 / 3) * h) * (4 / (9 * c2)) * D_n2)
+    net_U_n3 = dpm_net(net, class_labels, U_n3, s2)
+    D_n3 = net_U_n3 - net_x
+    
+    u_n1 = u_n - t_nxt * h * (phi_1(h) * net_x + phi_2(h) * (3/2) * (D_n3))
+
+    return u_n1
+
+def expRK4_step(net, class_labels, x, t_cur, t_nxt):
+    def dpm_lambda(t):
+        return -torch.log(t)
+    
+    def dpm_t_lambda(l):
+        return torch.exp(-l)
+
+    lambda_cur = dpm_lambda(t_cur)
+    lambda_nxt = dpm_lambda(t_nxt)
+    h = lambda_nxt - lambda_cur
+
+    u_n = x
+
+    s = dpm_t_lambda(lambda_cur + 0.5 * h)
+    net_x = dpm_net(net, class_labels, x, t_cur)
+
+    U_n2 = u_n - s * h * (phi_1(0.5 * h) * 0.5 * net_x)
+    net_U_n2 = dpm_net(net, class_labels, U_n2, s)
+    D_n2 = net_U_n2 - net_x
+
+    U_n3 = u_n - s * h * (phi_1(0.5 * h) * 0.5 * net_x + phi_2(0.5 * h) * D_n2)
+    net_U_n3 = dpm_net(net, class_labels, U_n3, s)      # s or t_nxt?
+    D_n3 = net_U_n3 - net_x
+
+    U_n4 = u_n - t_nxt * h * (phi_1(h) * net_x + phi_2(h) * (D_n2 + D_n3))
+    net_U_n4 = dpm_net(net, class_labels, U_n4, t_nxt)  # s or t_nxt?
+    D_n4 = net_U_n4 - net_x
+
+    U_n5 = u_n \
+        - s * (
+            phi_1(0.5 * h) * 0.5 * h * net_x + \
+            phi_2(0.5 * h) * 0.25 * h * (2 * D_n2 + 2 * D_n3 - D_n4) + \
+            phi_3(0.5 * h) * 0.5 * h * (-D_n2 - D_n3 + D_n4)
+        ) \
+        - s * (
+            phi_2(h) * 0.25 * h * (D_n2 + D_n3 - D_n4) + \
+            phi_3(h) * h * (-D_n2 - D_n3 + D_n4)
+        )
+
+    # a_5_2 = 0.5 * phi_2(0.5 * h) - phi_3(h) + 0.25 * phi_2(h) - 0.5 * phi_3(0.5 * h)
+    # a_5_4 = -a_5_2 + 0.25 * phi_2(0.5 * h) # ???
+
+    # U_n5 = u_n - s * h * (
+    #     net_x * (0.5 * phi_1(0.5 * h) - 2 * a_5_2 - a_5_4) + \
+    #     net_U_n2 * (a_5_2) + \
+    #     net_U_n3 * (a_5_2) + \
+    #     net_U_n4 * (0.25 * phi_2(0.5 * h) - a_5_2)
+    # )
+
+    net_U_n5 = dpm_net(net, class_labels, U_n5, s)  # s or t_nxt?
+    D_n5 = net_U_n5 - net_x 
+
+    u_n1 = u_n - t_nxt * h * (
+        phi_1(h) * net_x + \
+        phi_2(h) * (-D_n4 + 4 * D_n5) + \
+        phi_3(h) * (4 * D_n4 - 8 * D_n5)
+    )
+
+    return u_n1
+
+
+def cox_matthews_step(net, class_labels, x, t_cur, t_nxt):
+    def dpm_lambda(t):
+        return -torch.log(t)
+    
+    def dpm_t_lambda(l):
+        return torch.exp(-l)
+
+    lambda_cur = dpm_lambda(t_cur)
+    lambda_nxt = dpm_lambda(t_nxt)
+    h = lambda_nxt - lambda_cur
+
+    u_n = x
+
+    s = dpm_t_lambda(lambda_cur + 0.5 * h)
+    net_x = dpm_net(net, class_labels, x, t_cur)
+
+    U_n2 = u_n - s * h * (phi_1(0.5 * h) * 0.5 * net_x)
+    net_U_n2 = dpm_net(net, class_labels, U_n2, s)
+
+    U_n3 = u_n - s * h * (phi_1(0.5 * h) * 0.5 * net_U_n2)
+    net_U_n3 = dpm_net(net, class_labels, U_n3, s)
+
+    U_n4 = u_n - t_nxt * h * (0.5 * phi_1(0.5 * h) * (phi_0(0.5 * h) - 1) * net_x + phi_1(0.5 * h) * net_U_n3)
+    net_U_n4 = dpm_net(net, class_labels, U_n4, t_nxt)
+
+    u_n1 = u_n - t_nxt * h * (
+        net_x * (phi_1(h) - 3 * phi_2(h) + 4 * phi_3(h)) + \
+        net_U_n2 * (2 * phi_2(h) - 4 * phi_3(h)) + \
+        net_U_n3 * (2 * phi_2(h) - 4 * phi_3(h)) + \
+        net_U_n4 * (4 * phi_3(h) - phi_2(h))
+    )
+
+    return u_n1
+
+
+def krogstad_step(net, class_labels, x, t_cur, t_nxt):
+    def dpm_lambda(t):
+        return -torch.log(t)
+    
+    def dpm_t_lambda(l):
+        return torch.exp(-l)
+
+    lambda_cur = dpm_lambda(t_cur)
+    lambda_nxt = dpm_lambda(t_nxt)
+    h = lambda_nxt - lambda_cur
+
+    u_n = x
+
+    s = dpm_t_lambda(lambda_cur + 0.5 * h)
+    net_x = dpm_net(net, class_labels, x, t_cur)
+
+    U_n2 = u_n - s * h * (phi_1(0.5 * h) * 0.5 * net_x)
+    net_U_n2 = dpm_net(net, class_labels, U_n2, s)
+    D_n2 = net_U_n2 - net_x
+
+    U_n3 = u_n - s * h * (0.5 * phi_1(0.5 * h) * net_x + phi_2(0.5 * h) * D_n2)
+    net_U_n3 = dpm_net(net, class_labels, U_n3, s)
+    D_n3 = net_U_n3 - net_x
+
+    U_n4 = u_n - t_nxt * h * (phi_1(h) * net_x + 2 * phi_1(h) * D_n3)
+    net_U_n4 = dpm_net(net, class_labels, U_n4, t_nxt)
+
+    u_n1 = u_n - t_nxt * h * (
+        net_x * (phi_1(h) - 3 * phi_2(h) + 4 * phi_3(h)) + \
+        net_U_n2 * (2 * phi_2(h) - 4 * phi_3(h)) + \
+        net_U_n3 * (2 * phi_2(h) - 4 * phi_3(h)) + \
+        net_U_n4 * (4 * phi_3(h) - phi_2(h))
+    )
+
+    return u_n1
+
+
+# Simple, alpha(t) = 1, sigma(t) = t
+def ddim_solver_step(net, class_labels, x, t_cur, t_nxt):
+    eps = dpm_net(net, class_labels, x, t_cur)
+    x_nxt = x - (t_cur - t_nxt) * eps
+    
+    return x_nxt
+
+
+# Simple, alpha(t) = 1, sigma(t) = t
+def generic_simple_sampler_ode(
+    net, latents, solver, t_steps, class_labels=None
+):
+    x_nxt = latents.to(torch.float64) * t_steps[0]
+    num_steps = len(t_steps)
+
+    for i, (t_cur, t_nxt) in enumerate(zip(t_steps[:-1], t_steps[1:])):
+        x_cur = x_nxt
+
+        if i == num_steps - 2:
+            x_nxt = ddim_solver_step(net, class_labels, x_cur, t_cur, t_nxt)
+        else:
+            x_nxt = solver(net, class_labels, x_cur, t_cur, t_nxt)
+
+    return x_nxt
+
 #----------------------------------------------------------------------------
 # Proposed EDM sampler (Algorithm 2).
 
+# Actually dpm solver for now
 def edm_sampler(
     net, latents, class_labels=None, randn_like=torch.randn_like,
     num_steps=18, sigma_min=0.002, sigma_max=80, rho=7,
@@ -36,11 +357,29 @@ def edm_sampler(
     t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
     t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
 
+    # TODO: de-retardation
+    return generic_simple_sampler_ode(net, latents, krogstad_step, t_steps, class_labels)
+
     # Main sampling loop.
     x_next = latents.to(torch.float64) * t_steps[0]
     for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])): # 0, ..., N-1
         x_cur = x_next
 
+        #### DPM-Solver-2
+        # if i < num_steps - 1:
+        #     s = (t_cur * t_next).sqrt()
+        #     denoised_x = net(x_cur, t_cur, class_labels).to(torch.float64)
+        #     u = x_cur + (s / t_cur) * ((t_cur / t_next).sqrt() - 1) * (denoised_x - x_cur)
+        #     x_next = u
+        #     denoised_u = net(u, s, class_labels).to(torch.float64)
+        #     x_next = x_cur + ((t_cur - t_next) / s) * (denoised_u - u)
+        # else:
+
+        #     #### FIRST ORDER
+        #     denoised = net(x_cur, t_cur, class_labels).to(torch.float64)
+        #     x_next = x_cur * (t_next / t_cur) - (t_next / t_cur - 1) * denoised
+
+        #### EDM-HEUN
         # Increase noise temporarily.
         gamma = min(S_churn / num_steps, np.sqrt(2) - 1) if S_min <= t_cur <= S_max else 0
         t_hat = net.round_sigma(t_cur + gamma * t_cur)
